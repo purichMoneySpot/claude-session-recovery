@@ -64,28 +64,62 @@ def find_claude_dir():
     sys.exit(1)
 
 
-def find_desktop_sessions_dir():
-    """Find the Claude Desktop app's session registration directory."""
+def _desktop_base_candidates():
+    """Return candidate 'claude-code-sessions' base dirs for this platform.
+
+    Ordered by likelihood. On Windows this includes the MSIX / Microsoft Store
+    packaged-app redirect: when Claude Desktop is installed as a packaged app,
+    Windows redirects its %APPDATA%\\Claude writes into a private per-package
+    folder under %LOCALAPPDATA%\\Packages\\<PackageFamilyName>\\LocalCache\\
+    Roaming\\Claude. A plain (non-packaged) Python process does not see the
+    normal %APPDATA%\\Claude path at all, so we must probe the redirect too.
+    """
+    candidates = []
     if sys.platform == "win32":
-        base = Path(os.environ.get("APPDATA", "")) / "Claude" / "claude-code-sessions"
+        appdata = os.environ.get("APPDATA", "")
+        if appdata:
+            candidates.append(Path(appdata) / "Claude" / "claude-code-sessions")
+
+        # MSIX / Store packaged-app redirect(s). Glob for any Claude* package.
+        local = os.environ.get("LOCALAPPDATA", "")
+        if local:
+            pkg_glob = str(
+                Path(local) / "Packages" / "Claude*" / "LocalCache"
+                / "Roaming" / "Claude" / "claude-code-sessions"
+            )
+            candidates.extend(Path(p) for p in glob.glob(pkg_glob))
     elif sys.platform == "darwin":
-        base = Path.home() / "Library" / "Application Support" / "Claude" / "claude-code-sessions"
+        candidates.append(
+            Path.home() / "Library" / "Application Support"
+            / "Claude" / "claude-code-sessions"
+        )
     else:
         # Linux: XDG_CONFIG_HOME or ~/.config
         xdg = os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config"))
-        base = Path(xdg) / "Claude" / "claude-code-sessions"
+        candidates.append(Path(xdg) / "Claude" / "claude-code-sessions")
 
-    if not base.exists():
-        return None, None
+    return candidates
 
-    # Find the org/user subdirectory (two levels of UUIDs)
-    for org_dir in base.iterdir():
-        if org_dir.is_dir():
-            for user_dir in org_dir.iterdir():
-                if user_dir.is_dir():
-                    return base, user_dir
 
-    return base, None
+def find_desktop_sessions_dir():
+    """Find the Claude Desktop app's session registration directory."""
+    existing_base = None
+
+    for base in _desktop_base_candidates():
+        if not base.exists():
+            continue
+        if existing_base is None:
+            existing_base = base
+
+        # Find the org/user subdirectory (two levels of UUIDs)
+        for org_dir in base.iterdir():
+            if org_dir.is_dir():
+                for user_dir in org_dir.iterdir():
+                    if user_dir.is_dir():
+                        return base, user_dir
+
+    # A base exists but has no org/user subdirs yet — report it for diagnostics.
+    return existing_base, None
 
 
 # --- Session Scanning ---
